@@ -100,7 +100,7 @@ def check_new_jobs():
 
 
 if __name__ == "__main__":
-    print("Watching WordPress jobs feed...")
+    print("Watching WordPress & Software jobs feed...")
     print(f"BOT_TOKEN set: {bool(BOT_TOKEN)}")
     print(f"CHAT_ID set: {bool(CHAT_ID)}")
 
