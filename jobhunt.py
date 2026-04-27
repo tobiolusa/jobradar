@@ -10,7 +10,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 FEED_URL = "https://jobs.wordpress.net/feed/"
 STATE_FILE = "last_seen_job.json"
-CHECK_INTERVAL = 300  # 5 minutes
+CHECK_INTERVAL = 600  # 10git minutes
 
 
 def send_telegram_message(text: str):
