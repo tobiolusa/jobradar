@@ -1,12 +1,12 @@
 import time
 import json
 from pathlib import Path
+import os
 
 import requests
 import feedparser
-
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+CHAT_ID = os.environ.get("CHAT_ID", "")
 FEED_URL = "https://jobs.wordpress.net/feed/"
 STATE_FILE = "last_seen_job.json"
 CHECK_INTERVAL = 300  # 5 minutes
