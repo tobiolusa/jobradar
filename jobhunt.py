@@ -5,6 +5,7 @@ import os
 
 import requests
 import feedparser
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CHAT_ID = os.environ.get("CHAT_ID", "")
 FEED_URL = "https://jobs.wordpress.net/feed/"
@@ -100,6 +101,14 @@ def check_new_jobs():
 
 if __name__ == "__main__":
     print("Watching WordPress jobs feed...")
+    print(f"BOT_TOKEN set: {bool(BOT_TOKEN)}")
+    print(f"CHAT_ID set: {bool(CHAT_ID)}")
+
+    try:
+        send_telegram_message("JobRadar is live and watching for new WordPress jobs!")
+        print("Startup message sent.")
+    except Exception as e:
+        print(f"Failed to send startup message: {e}")
 
     while True:
         try:
