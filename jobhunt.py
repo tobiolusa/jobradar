@@ -29,7 +29,7 @@ X_KEYWORDS = [
 ]
 
 # ── General ─────────────────────────────────────────────────────
-CHECK_INTERVAL = 600  # 10 minutes
+CHECK_INTERVAL = 60  # 10 minutes
 
 
 # ── Telegram ────────────────────────────────────────────────────
