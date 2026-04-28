@@ -1,6 +1,7 @@
 import time
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 import os
 
 import requests
@@ -20,7 +21,7 @@ X_STATE_FILE = "last_seen_tweet.json"
 X_KEYWORDS = [
     "looking for wordpress developer",
     "need wordpress developer",
-    "hire wordpress developer",
+    "hire website developer",
     "wordpress developer needed",
     "wordpress freelancer",
     "looking for shopify developer",
@@ -29,7 +30,8 @@ X_KEYWORDS = [
 ]
 
 # ── General ─────────────────────────────────────────────────────
-CHECK_INTERVAL = 60  # 10 minutes
+CHECK_INTERVAL = 600  # 10 minutes
+SEEN_TWEET_IDS: set = set()
 
 
 # ── Telegram ────────────────────────────────────────────────────
@@ -121,21 +123,23 @@ def check_new_jobs():
 
 
 # ── SocialData Twitter Search ────────────────────────────────────
-def load_last_tweet_id():
+def load_seen_ids():
     path = Path(X_STATE_FILE)
     if not path.exists():
-        return None
+        return set()
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data.get("last_tweet_id")
+        return set(data.get("seen_ids", []))
     except Exception:
-        return None
+        return set()
 
 
-def save_last_tweet_id(tweet_id: str):
+def save_seen_ids(seen_ids: set):
+    # keep only the last 500 IDs so the file doesn't grow forever
+    ids_list = list(seen_ids)[-500:]
     with open(X_STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"last_tweet_id": tweet_id}, f)
+        json.dump({"seen_ids": ids_list}, f)
 
 
 def build_query():
@@ -143,23 +147,18 @@ def build_query():
     return "(" + " OR ".join(parts) + ") -is:retweet lang:en"
 
 
-def search_tweets(since_id=None):
+def search_tweets():
     if not SOCIALDATA_API_KEY:
         print("SOCIALDATA_API_KEY not set, skipping Twitter search.")
-        return [], None
+        return []
 
     url = "https://api.socialdata.tools/twitter/search"
     headers = {
         "Authorization": f"Bearer {SOCIALDATA_API_KEY}",
         "Accept": "application/json",
     }
-
-    query = build_query()
-    if since_id:
-        query += f" since_id:{since_id}"
-
     params = {
-        "query": query,
+        "query": build_query(),
         "type": "Latest",
     }
 
@@ -167,79 +166,85 @@ def search_tweets(since_id=None):
 
     if response.status_code == 402:
         print("SocialData: insufficient credits.")
-        return [], None
-
+        return []
     if response.status_code == 429:
         print("SocialData: rate limited. Skipping this cycle.")
-        return [], None
+        return []
 
     response.raise_for_status()
     data = response.json()
 
     tweets = data.get("tweets") or []
     if not tweets:
-        return [], None
+        return []
 
-    # sort oldest first
-    tweets_sorted = sorted(tweets, key=lambda t: int(t.get("id_str", "0")))
+    # filter to only tweets posted within the last 15 minutes
+    now = time.time()
+    recent_tweets = []
+    for tweet in tweets:
+        created_at = tweet.get("tweet_created_at", "")
+        try:
+            dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            age_minutes = (now - dt.timestamp()) / 60
+            if age_minutes <= 15:
+                recent_tweets.append(tweet)
+        except Exception:
+            continue  # skip tweets with unparseable dates
 
-    results = []
-    for tweet in tweets_sorted:
-        results.append({
-            "id": tweet.get("id_str", ""),
-            "text": tweet.get("full_text") or tweet.get("text", ""),
-            "username": (tweet.get("user") or {}).get("screen_name", "unknown"),
-            "created_at": tweet.get("tweet_created_at", ""),
-        })
-
-    max_id = results[-1]["id"] if results else None
-    return results, max_id
+    return recent_tweets
 
 
 def check_new_tweets():
+    global SEEN_TWEET_IDS
+
     if not SOCIALDATA_API_KEY:
         return
 
-    since_id = load_last_tweet_id()
-    tweets, max_id = search_tweets(since_id=since_id)
-
-    # first run — save baseline only, send nothing
-    if since_id is None:
-        if max_id:
-            save_last_tweet_id(max_id)
-            print("First run: Twitter baseline saved.")
-        return
+    tweets = search_tweets()
 
     if not tweets:
-        print("No new tweets found.")
+        print("No recent tweets found.")
         return
 
+    sent = 0
     for tweet in tweets:
-        username = tweet["username"]
-        text = tweet["text"]
-        tweet_id = tweet["id"]
+        tweet_id = tweet.get("id_str", "")
+
+        if tweet_id in SEEN_TWEET_IDS:
+            continue
+
+        username = (tweet.get("user") or {}).get("screen_name", "unknown")
+        text = tweet.get("full_text") or tweet.get("text", "")
         link = f"https://twitter.com/{username}/status/{tweet_id}"
+        created_at = tweet.get("tweet_created_at", "")
 
         message = (
             f"🐦 New Lead on X/Twitter\n\n"
-            f"@{username}\n\n"
+            f"@{username}\n"
+            f"Posted: {created_at}\n\n"
             f"{text}\n\n"
             f"Link: {link}"
         )
 
         try:
             send_telegram_message(message)
+            SEEN_TWEET_IDS.add(tweet_id)
+            sent += 1
             print(f"Sent tweet from @{username}")
         except Exception as e:
             print(f"Failed to send tweet {tweet_id}: {e}")
-            return  # don't advance since_id past unsent tweets
+            break  # don't skip ahead on send failure
 
-    if max_id:
-        save_last_tweet_id(max_id)
+    save_seen_ids(SEEN_TWEET_IDS)
+
+    if sent == 0:
+        print("No new tweets to send.")
 
 
 # ── Main ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    SEEN_TWEET_IDS = load_seen_ids()
+
     print("JobRadar starting...")
     print(f"BOT_TOKEN set: {bool(BOT_TOKEN)}")
     print(f"CHAT_ID set: {bool(CHAT_ID)}")
@@ -250,7 +255,7 @@ if __name__ == "__main__":
             "✅ JobRadar is live!\n\n"
             "Watching:\n"
             "• WordPress Jobs RSS\n"
-            "• Twitter/X via SocialData"
+            "• Twitter/X via SocialData (last 15 mins only)"
         )
         print("Startup message sent.")
     except Exception as e:
