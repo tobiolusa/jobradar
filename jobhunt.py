@@ -21,16 +21,26 @@ X_STATE_FILE = "last_seen_tweet.json"
 X_KEYWORDS = [
     "looking for wordpress developer",
     "need wordpress developer",
-    "hire website developer",
+    "hire wordpress developer",
     "wordpress developer needed",
     "wordpress freelancer",
     "looking for shopify developer",
     "need shopify developer",
     "hire shopify developer",
+    "need a wordpress dev",
+    "wordpress help needed",
+    "wordpress website needed",
+    "shopify store needed",
+    "need shopify help",
+    "web developer needed",
+    "looking for web developer",
+    "freelance wordpress",
+    "freelance shopify",
 ]
 
 # ── General ─────────────────────────────────────────────────────
 CHECK_INTERVAL = 600  # 10 minutes
+TWEET_MAX_AGE_MINUTES = 60  # only show tweets from last 60 minutes
 SEEN_TWEET_IDS: set = set()
 
 
@@ -144,7 +154,7 @@ def save_seen_ids(seen_ids: set):
 
 def build_query():
     parts = [f'"{kw}"' for kw in X_KEYWORDS]
-    return "(" + " OR ".join(parts) + ") -is:retweet lang:en"
+    return "(" + " OR ".join(parts) + ") -is:retweet"
 
 
 def search_tweets():
@@ -178,7 +188,6 @@ def search_tweets():
     if not tweets:
         return []
 
-    # filter to only tweets posted within the last 15 minutes
     now = time.time()
     recent_tweets = []
     for tweet in tweets:
@@ -186,10 +195,10 @@ def search_tweets():
         try:
             dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
             age_minutes = (now - dt.timestamp()) / 60
-            if age_minutes <= 15:
+            if age_minutes <= TWEET_MAX_AGE_MINUTES:
                 recent_tweets.append(tweet)
         except Exception:
-            continue  # skip tweets with unparseable dates
+            continue
 
     return recent_tweets
 
@@ -233,7 +242,7 @@ def check_new_tweets():
             print(f"Sent tweet from @{username}")
         except Exception as e:
             print(f"Failed to send tweet {tweet_id}: {e}")
-            break  # don't skip ahead on send failure
+            break
 
     save_seen_ids(SEEN_TWEET_IDS)
 
@@ -255,7 +264,7 @@ if __name__ == "__main__":
             "✅ JobRadar is live!\n\n"
             "Watching:\n"
             "• WordPress Jobs RSS\n"
-            "• Twitter/X via SocialData (last 15 mins only)"
+            "• Twitter/X via SocialData (last 60 mins, broader keywords)"
         )
         print("Startup message sent.")
     except Exception as e:
