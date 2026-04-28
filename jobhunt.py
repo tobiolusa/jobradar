@@ -26,7 +26,7 @@ X_KEYWORDS = [
     "wordpress freelancer",
     "looking for shopify developer",
     "need shopify developer",
-    "hire shopify developer",
+    "website developer needed",
     "need a wordpress dev",
     "wordpress help needed",
     "wordpress website needed",
