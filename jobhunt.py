@@ -18,30 +18,41 @@ STATE_FILE = "last_seen_job.json"
 
 # ── SocialData/Twitter config ───────────────────────────────────
 X_STATE_FILE = "last_seen_tweet.json"
-X_KEYWORDS = [
-    "looking for wordpress developer",
-    "need wordpress developer",
-    "hire wordpress developer",
-    "wordpress developer needed",
-    "wordpress freelancer",
-    "looking for shopify developer",
-    "need shopify developer",
-    "website developer needed",
-    "need a wordpress dev",
-    "wordpress help needed",
-    "wordpress website needed",
-    "shopify store needed",
-    "need shopify help",
-    "web developer needed",
-    "looking for web developer",
-    "freelance wordpress",
-    "freelance shopify",
+
+# Split into batches to stay within API query length limits.
+# Each batch is one API call per cycle, rotated round-robin.
+X_KEYWORD_BATCHES = [
+    [
+        "wordpress developer needed",
+        "need wordpress developer",
+        "hire wordpress developer",
+        "wordpress",
+    ],
+    [
+        "shopify developer needed",
+        "need shopify developer",
+        "hire shopify developer",
+        "shopify freelancer",
+    ],
+    [
+        "web developer needed",
+        "looking for web developer",
+        "website developer needed",
+        "need a web developer",
+    ],
+    [
+        "wordpress",
+        "need wordpress help",
+        "wordpress website needed",
+        "need shopify help",
+    ],
 ]
 
 # ── General ─────────────────────────────────────────────────────
-CHECK_INTERVAL = 600  # 10 minutes
-TWEET_MAX_AGE_MINUTES = 60  # only show tweets from last 60 minutes
+CHECK_INTERVAL = 600       # 10 minutes
+TWEET_MAX_AGE_MINUTES = 60 # only show tweets from last 60 mins
 SEEN_TWEET_IDS: set = set()
+_batch_index = 0           # tracks which keyword batch to use next
 
 
 # ── Telegram ────────────────────────────────────────────────────
@@ -152,15 +163,18 @@ def save_seen_ids(seen_ids: set):
         json.dump({"seen_ids": ids_list}, f)
 
 
-def build_query():
-    parts = [f'"{kw}"' for kw in X_KEYWORDS]
-    return "(" + " OR ".join(parts) + ") -is:retweet"
+def build_query(keywords: list) -> str:
+    parts = [f'"{kw}"' for kw in keywords]
+    return "(" + " OR ".join(parts) + ") -is:retweet lang:en"
 
 
-def search_tweets():
+def search_tweets(keywords: list) -> list:
     if not SOCIALDATA_API_KEY:
         print("SOCIALDATA_API_KEY not set, skipping Twitter search.")
         return []
+
+    query = build_query(keywords)
+    print(f"Querying: {query}")
 
     url = "https://api.socialdata.tools/twitter/search"
     headers = {
@@ -168,7 +182,7 @@ def search_tweets():
         "Accept": "application/json",
     }
     params = {
-        "query": build_query(),
+        "query": query,
         "type": "Latest",
     }
 
@@ -184,13 +198,16 @@ def search_tweets():
     response.raise_for_status()
     data = response.json()
 
-    tweets = data.get("tweets") or []
-    if not tweets:
+    # Debug: log raw response shape so we can catch silent failures
+    tweets_raw = data.get("tweets") or []
+    print(f"SocialData response: status={response.status_code}, tweets={len(tweets_raw)}, keys={list(data.keys())}")
+
+    if not tweets_raw:
         return []
 
     now = time.time()
     recent_tweets = []
-    for tweet in tweets:
+    for tweet in tweets_raw:
         created_at = tweet.get("tweet_created_at", "")
         try:
             dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
@@ -200,16 +217,22 @@ def search_tweets():
         except Exception:
             continue
 
+    print(f"Tweets within {TWEET_MAX_AGE_MINUTES} mins: {len(recent_tweets)}")
     return recent_tweets
 
 
 def check_new_tweets():
-    global SEEN_TWEET_IDS
+    global SEEN_TWEET_IDS, _batch_index
 
     if not SOCIALDATA_API_KEY:
         return
 
-    tweets = search_tweets()
+    # Rotate through keyword batches each cycle
+    keywords = X_KEYWORD_BATCHES[_batch_index % len(X_KEYWORD_BATCHES)]
+    _batch_index += 1
+    print(f"Checking keyword batch {_batch_index}: {keywords}")
+
+    tweets = search_tweets(keywords)
 
     if not tweets:
         print("No recent tweets found.")
@@ -258,13 +281,14 @@ if __name__ == "__main__":
     print(f"BOT_TOKEN set: {bool(BOT_TOKEN)}")
     print(f"CHAT_ID set: {bool(CHAT_ID)}")
     print(f"SOCIALDATA_API_KEY set: {bool(SOCIALDATA_API_KEY)}")
+    print(f"Keyword batches: {len(X_KEYWORD_BATCHES)} (rotating each cycle)")
 
     try:
         send_telegram_message(
             "✅ JobRadar is live!\n\n"
             "Watching:\n"
             "• WordPress Jobs RSS\n"
-            "• Twitter/X via SocialData (last 60 mins, broader keywords)"
+            "• Twitter/X via SocialData (last 60 mins, rotating keyword batches)"
         )
         print("Startup message sent.")
     except Exception as e:
