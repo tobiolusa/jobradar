@@ -1,5 +1,6 @@
 import time
 import json
+import threading
 from pathlib import Path
 from datetime import datetime, timezone
 import os
@@ -19,8 +20,6 @@ STATE_FILE = "last_seen_job.json"
 # ── SocialData/Twitter config ───────────────────────────────────
 X_STATE_FILE = "last_seen_tweet.json"
 
-# Split into batches to stay within API query length limits.
-# Each batch is one API call per cycle, rotated round-robin.
 X_KEYWORD_BATCHES = [
     [
         "wordpress developer needed",
@@ -49,21 +48,84 @@ X_KEYWORD_BATCHES = [
 ]
 
 # ── General ─────────────────────────────────────────────────────
-CHECK_INTERVAL = 600       # 10 minutes
-TWEET_MAX_AGE_MINUTES = 60 # only show tweets from last 60 mins
+CHECK_INTERVAL = 600        # 10 minutes
+TWEET_MAX_AGE_MINUTES = 60
 SEEN_TWEET_IDS: set = set()
-_batch_index = 0           # tracks which keyword batch to use next
+_batch_index = 0
+
+# ── Pause/Resume state ───────────────────────────────────────────
+is_paused = False
+_last_update_id = None      # tracks Telegram updates so we don't re-process old ones
 
 
 # ── Telegram ────────────────────────────────────────────────────
 def send_telegram_message(text: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-    }
+    payload = {"chat_id": CHAT_ID, "text": text}
     response = requests.post(url, data=payload, timeout=20)
     response.raise_for_status()
+
+
+def get_telegram_updates(offset=None):
+    """Poll Telegram for new messages sent to the bot."""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    params = {"timeout": 5, "allowed_updates": ["message"]}
+    if offset:
+        params["offset"] = offset
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json().get("result", [])
+    except Exception as e:
+        print(f"Failed to fetch Telegram updates: {e}")
+        return []
+
+
+def process_telegram_commands():
+    """Check for /pause, /resume, /status commands sent to the bot."""
+    global is_paused, _last_update_id
+
+    updates = get_telegram_updates(offset=_last_update_id)
+
+    for update in updates:
+        _last_update_id = update["update_id"] + 1  # advance offset so we don't re-read
+        message = update.get("message", {})
+        text = message.get("text", "").strip().lower()
+        from_id = str(message.get("chat", {}).get("id", ""))
+
+        # Only accept commands from the authorised CHAT_ID
+        if from_id != str(CHAT_ID):
+            continue
+
+        if text == "/pause":
+            if is_paused:
+                send_telegram_message("⏸ JobRadar is already paused.")
+            else:
+                is_paused = True
+                send_telegram_message(
+                    "⏸ JobRadar paused.\n\nSend /resume to start again."
+                )
+                print("Bot paused via Telegram command.")
+
+        elif text == "/resume":
+            if not is_paused:
+                send_telegram_message("▶️ JobRadar is already running.")
+            else:
+                is_paused = False
+                send_telegram_message(
+                    "▶️ JobRadar resumed!\n\nWatching for new jobs and leads."
+                )
+                print("Bot resumed via Telegram command.")
+
+        elif text == "/status":
+            state = "⏸ PAUSED" if is_paused else "▶️ RUNNING"
+            send_telegram_message(
+                f"JobRadar status: {state}\n\n"
+                f"Commands:\n"
+                f"/pause  — stop sending alerts\n"
+                f"/resume — start sending alerts\n"
+                f"/status — check current state"
+            )
 
 
 # ── WordPress RSS ────────────────────────────────────────────────
@@ -157,7 +219,6 @@ def load_seen_ids():
 
 
 def save_seen_ids(seen_ids: set):
-    # keep only the last 500 IDs so the file doesn't grow forever
     ids_list = list(seen_ids)[-500:]
     with open(X_STATE_FILE, "w", encoding="utf-8") as f:
         json.dump({"seen_ids": ids_list}, f)
@@ -181,10 +242,7 @@ def search_tweets(keywords: list) -> list:
         "Authorization": f"Bearer {SOCIALDATA_API_KEY}",
         "Accept": "application/json",
     }
-    params = {
-        "query": query,
-        "type": "Latest",
-    }
+    params = {"query": query, "type": "Latest"}
 
     response = requests.get(url, headers=headers, params=params, timeout=30)
 
@@ -198,7 +256,6 @@ def search_tweets(keywords: list) -> list:
     response.raise_for_status()
     data = response.json()
 
-    # Debug: log raw response shape so we can catch silent failures
     tweets_raw = data.get("tweets") or []
     print(f"SocialData response: status={response.status_code}, tweets={len(tweets_raw)}, keys={list(data.keys())}")
 
@@ -227,7 +284,6 @@ def check_new_tweets():
     if not SOCIALDATA_API_KEY:
         return
 
-    # Rotate through keyword batches each cycle
     keywords = X_KEYWORD_BATCHES[_batch_index % len(X_KEYWORD_BATCHES)]
     _batch_index += 1
     print(f"Checking keyword batch {_batch_index}: {keywords}")
@@ -273,7 +329,7 @@ def check_new_tweets():
         print("No new tweets to send.")
 
 
-# ── Main ─────────────────────────────────────────────────────────
+# ── Main loop ────────────────────────────────────────────────────
 if __name__ == "__main__":
     SEEN_TWEET_IDS = load_seen_ids()
 
@@ -288,13 +344,28 @@ if __name__ == "__main__":
             "✅ JobRadar is live!\n\n"
             "Watching:\n"
             "• WordPress Jobs RSS\n"
-            "• Twitter/X via SocialData (last 60 mins, rotating keyword batches)"
+            "• Twitter/X via SocialData (last 60 mins, rotating keyword batches)\n\n"
+            "Commands:\n"
+            "/pause  — stop sending alerts\n"
+            "/resume — start sending alerts\n"
+            "/status — check current state"
         )
         print("Startup message sent.")
     except Exception as e:
         print(f"Failed to send startup message: {e}")
 
     while True:
+        # Always check for commands, even when paused
+        try:
+            process_telegram_commands()
+        except Exception as e:
+            print(f"Command polling error: {e}")
+
+        if is_paused:
+            print("Bot is paused. Skipping job and tweet checks.")
+            time.sleep(CHECK_INTERVAL)
+            continue
+
         try:
             check_new_jobs()
         except Exception as e:
