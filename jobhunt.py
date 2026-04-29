@@ -41,7 +41,7 @@ X_KEYWORD_BATCHES = [
         "need a web developer",
     ],
     [
-        "wordpress",
+        "web developer",
         "need wordpress help",
         "wordpress website needed",
         "need shopify help",
