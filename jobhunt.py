@@ -26,7 +26,7 @@ X_KEYWORD_BATCHES = [
         "wordpress developer needed",
         "need wordpress developer",
         "hire wordpress developer",
-        "wordpress",
+        "python developer",
     ],
     [
         "shopify developer needed",
